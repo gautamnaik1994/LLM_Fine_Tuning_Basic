@@ -1,0 +1,42 @@
+direction: right
+vars: {
+  d2-config: {
+    theme-id: 7
+  }
+}
+
+# Fine Tuning Diagram
+pre_training: "Pre Training" {
+  style: {
+    fill: "transparent"
+    stroke-dash: 2
+  }
+  data: "Data" {
+    shape: stored_data
+  }
+  neural_network: "Neural Network" {
+    shape: hexagon
+  }
+  pretrained_model: "Pretrained Model" {
+    shape: oval
+  }
+}
+
+pre_training.data -> pre_training.neural_network
+pre_training.neural_network -> pre_training.pretrained_model
+fine_tuning: "Fine Tuning" {
+  style: {
+    fill: "transparent"
+    stroke-dash: 2
+  }
+  domain_specific_data: "Domain Specific Data" {
+    shape: stored_data
+  }
+  fine_tuned_model: "Fine Tuned Model" {
+    shape: oval
+  }
+}
+pre_training.pretrained_model -> fine_tuning.fine_tuned_model
+fine_tuning.domain_specific_data -> fine_tuning.fine_tuned_model
+
+pre_training -> fine_tuning

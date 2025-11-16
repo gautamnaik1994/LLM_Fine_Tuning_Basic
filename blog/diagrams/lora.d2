@@ -1,0 +1,47 @@
+direction: right
+
+
+domain_specific_data: "Domain Specific Data" {
+  shape: document
+}
+
+peft_model: {
+  label: "Peft Model"
+  style: {
+    fill: "beige"
+    stroke-dash: 2
+  }
+  frozen_model: "Frozen Model"
+  lora_adapter: "LoRA Adapter" {
+    style: {
+      fill: "aliceblue"
+      stroke-dash: 2
+    }
+    lora_adapter: "Weight A" {
+      style: {
+        fill: "lightblue"
+      }
+    }
+    lora_adapter_2: "Weight B" {
+      style: {
+        fill: "lightgreen"
+      }
+    }
+  }
+}
+
+adder: "+" {
+  shape: circle
+}
+
+combined_model: "Combined Model"
+
+domain_specific_data -> peft_model: {
+  style: {
+    animated: true
+  }
+}
+
+peft_model.lora_adapter -> adder
+peft_model.frozen_model -> adder
+adder -> combined_model: "merge model"
