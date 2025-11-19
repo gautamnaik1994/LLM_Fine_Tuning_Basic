@@ -1,5 +1,7 @@
 direction: right
 
+**.style.border-radius: 8
+**.style.font-color: "#333"
 
 domain_specific_data: "Domain Specific Data" {
   shape: document
@@ -10,6 +12,7 @@ peft_model: {
   style: {
     fill: "beige"
     stroke-dash: 2
+    font-color: "#333333"
   }
   frozen_model: "Frozen Model"
   lora_adapter: "LoRA Adapter" {
@@ -36,12 +39,7 @@ adder: "+" {
 
 combined_model: "Combined Model"
 
-domain_specific_data -> peft_model: {
-  style: {
-    animated: true
-  }
-}
-
+domain_specific_data -> peft_model
 peft_model.lora_adapter -> adder
 peft_model.frozen_model -> adder
 adder -> combined_model: "merge model"

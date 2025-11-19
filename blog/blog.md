@@ -107,7 +107,6 @@ Above code will directly download the pre-trained Qwen model and tokenizer from 
 
 We need to preprocess the dataset to convert it into a format suitable for training the Qwen model. The Qwen model expects the input in a specific format, so we will create a function to preprocess the data accordingly.
 
-But for this fine tuning instance, we will try to change the preprocessing to a simpler Q & A format instead of chatml format. This is to see if we can get better results with simpler format.
 Here is the code to preprocess the dataset in a simple Q & A format:
 
 ```python
@@ -124,6 +123,7 @@ def preprocess_qwen_chatml(df, tokenizer_name, max_length=512):
         instruction = row["question"]
         response = row["answer"]
 
+        # Following Qwen ChatML format, it means that the model was trained with these special tokens
         chat_prompt = (
             "<|im_start|>system\n"
             "You are a mental health assistant. Based on the user's description, respond with a single sentence indicating the most relevant diagnosis from the mental health domain.<|im_end|>\n"
@@ -149,6 +149,8 @@ def preprocess_qwen_chatml(df, tokenizer_name, max_length=512):
 
     return processed
 ```
+
+If you notice in the above code, we are masking everything before the assistant's response in the labels. This is important because we only want the model to learn to generate the assistant's response based on the user's input. This is important because during training, we want the model to focus on generating the correct response rather than trying to predict the entire conversation history.
 
 ## Step 4: Set up Lora configuration
 
