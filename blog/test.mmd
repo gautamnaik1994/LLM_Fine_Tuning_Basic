@@ -1,0 +1,20 @@
+---
+config:
+  layout: elk
+  look: neo
+  theme: classic
+---
+flowchart LR
+ subgraph lora_adapter["Lora Adapter"]
+    direction LR
+        mat_a["Matrix A"]
+        mat_b["Matrix B"]
+  end
+ subgraph peft_model["Peft Model"]
+        lora_adapter
+        frozen_model["Frozen Model"]
+  end
+    lora_adapter --> merged_model["+"]
+    frozen_model --> merged_model
+    A["Domain Specific Data"] --> peft_model
+    merged_model --> combined_model["Combined Model"]
