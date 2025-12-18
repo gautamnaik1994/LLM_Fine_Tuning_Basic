@@ -3,3 +3,7 @@ finetuned-model
 logs
 __pycache__
 merged
+.env
+gemma-merged
+finetuned-model-gemma
+finetuned-model-gemma

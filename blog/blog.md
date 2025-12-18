@@ -1,4 +1,25 @@
-# Fine Tune LLM
+---
+title: LLM Fine Tuning
+date: 2025-12-10
+slug: llm-fine-tuning
+updatedDate: 2025-12-10
+description: This case study delves deeply into LLM fine-tuning to uncover insights
+  about the process and assist in recommending best practices for effective
+  fine-tuning.
+publish: true
+featuredPost: false
+tags:
+  - python
+categories:
+  - Deep Learning
+keywords:
+    - llm
+    - fine-tuning
+    - deep learning
+    - transfer learning
+    - machine learning
+bannerImage: llm-fine-tuning.png
+---
 
 ## Introduction
 
@@ -46,30 +67,6 @@ PEFT is futher divided into multiple techniques like LoRA, Adapters, Prefix Tuni
 
 ![alt text](./diagrams/lora.svg)
 
-```mermaid
----
-config:
-  layout: dagre
-  look: neo
-  theme: neo-dark
----
-flowchart LR
- subgraph lora_adapter["Lora Adapter"]
-    direction LR
-        mat_a["Matrix A"]
-        mat_b["Matrix B"]
-  end
- subgraph peft_model["Peft Model"]
-        lora_adapter
-        frozen_model["Frozen Model"]
-  end
-    lora_adapter --> merged_model["+"]
-    frozen_model --> merged_model
-    A["Domain Specific Data"] --> peft_model
-    merged_model --> combined_model["Combined Model"]
-
-```
-
 LoRA is a parameter-efficient fine-tuning technique that introduces low-rank matrices into the model's architecture. Instead of updating all the weights of the model during fine-tuning, LoRA adds trainable low-rank matrices to certain layers of the model. During training, only these low-rank matrices are updated, while the original weights remain frozen. This significantly reduces the number of parameters that need to be updated, making the fine-tuning process more efficient.
 
 LoRA takes less time as compared to QLoRA, but consumes more memory during training as it does not use quantization. LoRA is suitable for scenarios where you have access to GPUs with sufficient memory to handle the model size.
@@ -96,96 +93,163 @@ The full code for this notebook is available [here](https://github.com/your-repo
 
 We will use counsel chat dataset from Huggingface which contains mental health related questions and answers. You can load the dataset using the following code. The dataset is available [here](https://huggingface.co/datasets/counselchat/counselchat).
 
+```python
+from datasets import load_dataset
+
+ds = load_dataset("nbertagnolli/counsel-chat")
+
+# drop null
+ds = ds.filter(lambda x: x['questionText'] is not None)
+ds = ds.filter(lambda x: x['topic'] is not None)
+```
+
 ## Step 2: Load the Pre-trained Qwen Model
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
 import torch
 
-# Configure 4-bit quantization
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model_id = "google/gemma-3-270m-it"
+
+# Configure 4-bit quantization if interested in QLoRA
 quantization_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
     bnb_4bit_compute_dtype=torch.float16,
 )
 
-device = "cuda" if torch.cuda.is_available() else "cpu" # QLoRA requires GPU
+
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+tokenizer.padding_side = "right" # While fine-tuning, padding should be on the right side
 
 model = AutoModelForCausalLM.from_pretrained(
-    "Qwen/Qwen1.5-0.5B-Chat",
-    quantization_config=quantization_config,
-    device_map="auto"
+    model_id,
+    device_map="auto",
+    quantization_config=quantization_config # Remove this line for LoRA
 )
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen1.5-0.5B-Chat", use_fast=True, trust_remote_code=True)
 ```
 
-Above code will directly download the pre-trained Qwen model and tokenizer from Huggingface model hub.
+Above code will directly download the pre-trained Gemma model and tokenizer from Huggingface model hub.
 
 ## Step 3: Preprocess the Dataset
 
-We need to preprocess the dataset to convert it into a format suitable for training the Qwen model. The Qwen model expects the input in a specific format, so we will create a function to preprocess the data accordingly.
+We need to preprocess the dataset to convert it into a format suitable for training the Gemma model. The Gemma model expects the input in a specific format, so we will create a function to preprocess the data accordingly.
 
-Here is the code to preprocess the dataset in a simple Q & A format:
+First, we structure the data into a chat format:
 
 ```python
-def preprocess_qwen_chatml(df, tokenizer_name, max_length=512):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+SYSTEM_PROMPT = "You are an assistant responsible for classifying mental health status."
 
-    processed = []
+def build_chat(batch):
+    questions = batch["questionText"]
+    topics = batch["topic"]
 
-    for _, row in df.iterrows():
-        # Construct the conversation structure
-        messages = [
-            {"role": "system", "content": "You are a mental health assistant. Based on the user's description, respond with a single sentence indicating the most relevant diagnosis from the mental health domain."},
-            {"role": "user", "content": row["question"]},
-            {"role": "assistant", "content": f"Based on what you've described, this sounds like {row['answer']}."}
-        ]
+    batch_conversations = []
 
-        # Use apply_chat_template to handle formatting automatically
-        # This is much more robust than manual string concatenation
-        chat_prompt = tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
+    for q, t in zip(questions, topics):
+        batch_conversations.append([
+            {"role": "user", "content": SYSTEM_PROMPT + "\n" + q},
+            {"role": "assistant", "content": f"Based on what you've described, this sounds like '{t}'."}
+        ])
+
+    return {
+        "conversation": batch_conversations
+    }
+
+chat_dataset = ds.map(build_chat, batched=True)
+```
+
+Next, we tokenize the data and mask the user prompts so the model only learns to generate the assistant's response:
+
+```python
+MAX_LENGTH = 512
+IGNORE_INDEX = -100
+
+def tokenize_and_mask_labels(batch):
+    tokenized_results = []
+
+    for conversation in batch['conversation']:
+        # 1. Format the full conversation string using the chat template
+        full_text = tokenizer.apply_chat_template(
+            conversation,
+            tokenize=False,
             add_generation_prompt=False
+        ).removeprefix('<bos>')
+
+        # 2. Format the prompt-only string
+        prompt_conversation = conversation[:-1]
+        prompt_text = tokenizer.apply_chat_template(
+            prompt_conversation,
+            tokenize=False,
+            add_generation_prompt=True 
+        ).removeprefix('<bos>')
+
+        # 3. Tokenize both texts
+        full_tokenized = tokenizer(
+            full_text,
+            max_length=MAX_LENGTH,
+            truncation=True,
+            padding="max_length",
+            return_tensors=None,
         )
 
-        # Tokenize full prompt
-        tokenized = tokenizer(chat_prompt, truncation=True, padding="max_length", max_length=max_length)
+        prompt_tokenized = tokenizer(
+            prompt_text,
+            max_length=MAX_LENGTH,
+            truncation=True,
+            padding=False,
+            return_tensors=None,
+        )
 
-        # Create labels (masking user input)
-        # Note: For simplicity in this demo, we are training on the whole sequence. 
-        # In production, you'd want to mask the user/system turns.
-        labels = tokenized["input_ids"].copy()
-        
-        # A simple heuristic to mask everything before the assistant's final response
-        # Ideally, use the tokenizer's offset mapping for precision
-        assistant_prefix = "assistant\n"
-        try:
-            response_start = chat_prompt.rindex(assistant_prefix) + len(assistant_prefix)
-            # Calculate roughly where that is in tokens (approximate)
-            # For precise masking, we'd tokenize parts separately.
-            # For this blog demo, we'll keep it simple or use the DataCollatorForCompletionOnlyLM from trl library which is best practice.
-        except ValueError:
-            pass
+        # 4. Create the labels array (shifted input_ids)
+        labels = full_tokenized["input_ids"].copy()
 
-        processed.append({
-            "input_ids": tokenized["input_ids"],
-            "attention_mask": tokenized["attention_mask"],
-            "labels": labels
+        # 5. Mask the prompt tokens
+        prompt_length = len(prompt_tokenized["input_ids"])
+        mask_end = min(prompt_length, len(labels))
+        labels[:mask_end] = [IGNORE_INDEX] * mask_end
+
+        # 6. Shift the labels (standard CLM)
+        input_ids = full_tokenized["input_ids"][:-1]
+        labels = labels[1:]
+        attention_mask = full_tokenized["attention_mask"][:-1]
+
+        tokenized_results.append({
+            "input_ids": input_ids,
+            "labels": labels,
+            "attention_mask": attention_mask
         })
 
-    return processed
+    return {
+        "input_ids": [r["input_ids"] for r in tokenized_results],
+        "labels": [r["labels"] for r in tokenized_results],
+        "attention_mask": [r["attention_mask"] for r in tokenized_results]
+    }
+
+tokenized_dataset = chat_dataset.map(
+    tokenize_and_mask_labels,
+    batched=True,
+    remove_columns=chat_dataset["train"].column_names
+)
 ```
 
 If you notice in the above code, we are masking everything before the assistant's response in the labels. This is important because we only want the model to learn to generate the assistant's response based on the user's input. This is important because during training, we want the model to focus on generating the correct response rather than trying to predict the entire conversation history.
 
+### What actually happens during preprocessing?
+
+<aside>
+
+</aside>
+
 ## Step 4: Set up Lora configuration
 
-Add target modules for Qwen model. The target modules are the layers of the model that we want to fine-tune using LoRA. In this case, we will target the attention layers of the Qwen model.
+<!-- Add target modules for Qwen model. The target modules are the layers of the model that we want to fine-tune using LoRA. In this case, we will target the attention layers of the Qwen model.
 Why these target modules? Because Qwen model uses QKV attention mechanism and these are the projection layers for query, key, value and output respectively. By applying LoRA to these layers, we can effectively adapt the attention mechanism of the model to our specific task.
-The Attention layers are crucial components of transformer-based models like Qwen. They allow the model to focus on different parts of the input sequence when making predictions. By fine-tuning these layers using LoRA, we can help the model learn to pay attention to the most relevant information for our specific task, which in this case is mental health counseling.
+The Attention layers are crucial components of transformer-based models like Qwen. They allow the model to focus on different parts of the input sequence when making predictions. By fine-tuning these layers using LoRA, we can help the model learn to pay attention to the most relevant information for our specific task, which in this case is mental health counseling. -->
+
+Add target modules for Gemma model. The target modules are the layers of the model that we want to fine-tune using LoRA.
 
 ```python
 from peft import LoraConfig, get_peft_model, TaskType
@@ -198,7 +262,8 @@ lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM, 
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
 )
-model = get_peft_model(model, lora_config)
+peft_model = get_peft_model(model, lora_config)
+peft_model.print_trainable_parameters()
 ```
 
 > **Hyperparameter Intuition**:
@@ -206,36 +271,41 @@ model = get_peft_model(model, lora_config)
 > * **Rank (r)**: Determines the capacity of the adapter. Higher `r` means more parameters and potentially better performance, but higher memory usage. `r=8` is a standard starting point.
 > * **Alpha**: Scales the learned weights. If you increase `r`, you usually increase `alpha` proportionally.
 
-Above code sets up the LoRA configuration for fine-tuning the Qwen model. You can adjust the parameters based on your requirements. Then we wrap the pre-trained model with PEFT using the `get_peft_model` function.
+Above code sets up the LoRA configuration for fine-tuning the Gemma model. You can adjust the parameters based on your requirements. Then we wrap the pre-trained model with PEFT using the `get_peft_model` function.
 
 Before applying LoRA, the model looks like this:
 
 ```python
-Qwen2ForCausalLM(
-  (model): Qwen2Model(
-    (embed_tokens): Embedding(151936, 1024)
+Gemma3ForCausalLM(
+  (model): Gemma3TextModel(
+    (embed_tokens): Gemma3TextScaledWordEmbedding(262144, 640, padding_idx=0)
     (layers): ModuleList(
-      (0-23): 24 x Qwen2DecoderLayer(
-        (self_attn): Qwen2Attention(
-          (q_proj): Linear(in_features=1024, out_features=1024, bias=True)
-          (k_proj): Linear(in_features=1024, out_features=1024, bias=True)
-          (v_proj): Linear(in_features=1024, out_features=1024, bias=True)
-          (o_proj): Linear(in_features=1024, out_features=1024, bias=False)
+      (0-17): 18 x Gemma3DecoderLayer(
+        (self_attn): Gemma3Attention(
+          (q_proj): Linear(in_features=640, out_features=1024, bias=False)
+          (k_proj): Linear(in_features=640, out_features=256, bias=False)
+          (v_proj): Linear(in_features=640, out_features=256, bias=False)
+          (o_proj): Linear(in_features=1024, out_features=640, bias=False)
+          (q_norm): Gemma3RMSNorm((256,), eps=1e-06)
+          (k_norm): Gemma3RMSNorm((256,), eps=1e-06)
         )
-        (mlp): Qwen2MLP(
-          (gate_proj): Linear(in_features=1024, out_features=2816, bias=False)
-          (up_proj): Linear(in_features=1024, out_features=2816, bias=False)
-          (down_proj): Linear(in_features=2816, out_features=1024, bias=False)
-          (act_fn): SiLU()
+        (mlp): Gemma3MLP(
+          (gate_proj): Linear(in_features=640, out_features=2048, bias=False)
+          (up_proj): Linear(in_features=640, out_features=2048, bias=False)
+          (down_proj): Linear(in_features=2048, out_features=640, bias=False)
+          (act_fn): GELUTanh()
         )
-        (input_layernorm): Qwen2RMSNorm((1024,), eps=1e-06)
-        (post_attention_layernorm): Qwen2RMSNorm((1024,), eps=1e-06)
+        (input_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
+        (post_attention_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
+        (pre_feedforward_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
+        (post_feedforward_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
       )
     )
-    (norm): Qwen2RMSNorm((1024,), eps=1e-06)
-    (rotary_emb): Qwen2RotaryEmbedding()
+    (norm): Gemma3RMSNorm((640,), eps=1e-06)
+    (rotary_emb): Gemma3RotaryEmbedding()
+    (rotary_emb_local): Gemma3RotaryEmbedding()
   )
-  (lm_head): Linear(in_features=1024, out_features=151936, bias=False)
+  (lm_head): Linear(in_features=640, out_features=262144, bias=False)
 )
 ```
 
@@ -244,19 +314,19 @@ What the model looks like after applying LoRA is shown below:
 ```python
 PeftModelForCausalLM(
   (base_model): LoraModel(
-    (model): Qwen2ForCausalLM(
-      (model): Qwen2Model(
-        (embed_tokens): Embedding(151936, 1024)
+    (model): Gemma3ForCausalLM(
+      (model): Gemma3TextModel(
+        (embed_tokens): Gemma3TextScaledWordEmbedding(262144, 640, padding_idx=0)
         (layers): ModuleList(
-          (0-23): 24 x Qwen2DecoderLayer(
-            (self_attn): Qwen2Attention(
+          (0-17): 18 x Gemma3DecoderLayer(
+            (self_attn): Gemma3Attention(
               (q_proj): lora.Linear(
-                (base_layer): Linear(in_features=1024, out_features=1024, bias=True)
+                (base_layer): Linear(in_features=640, out_features=1024, bias=False)
                 (lora_dropout): ModuleDict(
                   (default): Dropout(p=0.05, inplace=False)
                 )
                 (lora_A): ModuleDict(
-                  (default): Linear(in_features=1024, out_features=8, bias=False)
+                  (default): Linear(in_features=640, out_features=8, bias=False)
                 )
                 (lora_B): ModuleDict(
                   (default): Linear(in_features=8, out_features=1024, bias=False)
@@ -265,9 +335,38 @@ PeftModelForCausalLM(
                 (lora_embedding_B): ParameterDict()
                 (lora_magnitude_vector): ModuleDict()
               )
-              (k_proj): Linear(in_features=1024, out_features=1024, bias=True)
+              (k_proj): lora.Linear(
+                (base_layer): Linear(in_features=640, out_features=256, bias=False)
+                (lora_dropout): ModuleDict(
+                  (default): Dropout(p=0.05, inplace=False)
+                )
+                (lora_A): ModuleDict(
+                  (default): Linear(in_features=640, out_features=8, bias=False)
+                )
+                (lora_B): ModuleDict(
+                  (default): Linear(in_features=8, out_features=256, bias=False)
+                )
+                (lora_embedding_A): ParameterDict()
+                (lora_embedding_B): ParameterDict()
+                (lora_magnitude_vector): ModuleDict()
+              )
               (v_proj): lora.Linear(
-                (base_layer): Linear(in_features=1024, out_features=1024, bias=True)
+                (base_layer): Linear(in_features=640, out_features=256, bias=False)
+                (lora_dropout): ModuleDict(
+                  (default): Dropout(p=0.05, inplace=False)
+                )
+                (lora_A): ModuleDict(
+                  (default): Linear(in_features=640, out_features=8, bias=False)
+                )
+                (lora_B): ModuleDict(
+                  (default): Linear(in_features=8, out_features=256, bias=False)
+                )
+                (lora_embedding_A): ParameterDict()
+                (lora_embedding_B): ParameterDict()
+                (lora_magnitude_vector): ModuleDict()
+              )
+              (o_proj): lora.Linear(
+                (base_layer): Linear(in_features=1024, out_features=640, bias=False)
                 (lora_dropout): ModuleDict(
                   (default): Dropout(p=0.05, inplace=False)
                 )
@@ -275,28 +374,32 @@ PeftModelForCausalLM(
                   (default): Linear(in_features=1024, out_features=8, bias=False)
                 )
                 (lora_B): ModuleDict(
-                  (default): Linear(in_features=8, out_features=1024, bias=False)
+                  (default): Linear(in_features=8, out_features=640, bias=False)
                 )
                 (lora_embedding_A): ParameterDict()
                 (lora_embedding_B): ParameterDict()
                 (lora_magnitude_vector): ModuleDict()
               )
-              (o_proj): Linear(in_features=1024, out_features=1024, bias=False)
+              (q_norm): Gemma3RMSNorm((256,), eps=1e-06)
+              (k_norm): Gemma3RMSNorm((256,), eps=1e-06)
             )
-            (mlp): Qwen2MLP(
-              (gate_proj): Linear(in_features=1024, out_features=2816, bias=False)
-              (up_proj): Linear(in_features=1024, out_features=2816, bias=False)
-              (down_proj): Linear(in_features=2816, out_features=1024, bias=False)
-              (act_fn): SiLU()
+            (mlp): Gemma3MLP(
+              (gate_proj): Linear(in_features=640, out_features=2048, bias=False)
+              (up_proj): Linear(in_features=640, out_features=2048, bias=False)
+              (down_proj): Linear(in_features=2048, out_features=640, bias=False)
+              (act_fn): GELUTanh()
             )
-            (input_layernorm): Qwen2RMSNorm((1024,), eps=1e-06)
-            (post_attention_layernorm): Qwen2RMSNorm((1024,), eps=1e-06)
+            (input_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
+            (post_attention_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
+            (pre_feedforward_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
+            (post_feedforward_layernorm): Gemma3RMSNorm((640,), eps=1e-06)
           )
         )
-        (norm): Qwen2RMSNorm((1024,), eps=1e-06)
-        (rotary_emb): Qwen2RotaryEmbedding()
+        (norm): Gemma3RMSNorm((640,), eps=1e-06)
+        (rotary_emb): Gemma3RotaryEmbedding()
+        (rotary_emb_local): Gemma3RotaryEmbedding()
       )
-      (lm_head): Linear(in_features=1024, out_features=151936, bias=False)
+      (lm_head): Linear(in_features=640, out_features=262144, bias=False)
     )
   )
 )
@@ -310,27 +413,29 @@ As you can see, only the layers specified in `target_modules` are modified to in
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
 
 training_args = TrainingArguments(
-    output_dir="./finetuned-model",
+    output_dir="./gemma-finetuned-model",
     per_device_train_batch_size=4,
-    num_train_epochs=4,
+    num_train_epochs=3,
     logging_dir='./logs',
-    # save_steps=500,
     logging_steps=100,
     save_strategy="no",
-    label_names=["labels"],  # Explicitly specify label names for PEFT models
+    label_names=["labels"],
     save_total_limit=1,
+    report_to="none",
+    learning_rate=0.0001,
 )
+
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
 trainer = Trainer(
-    model=model,
+    model=peft_model,
     args=training_args,
-    train_dataset=tokenized_dataset,
+    train_dataset=tokenized_dataset["train"], # Assuming we use the train split
     processing_class=tokenizer,
     data_collator=data_collator,
 )
 trainer.train()
-trainer.save_model("./finetuned-model")
+trainer.save_model("./gemma-finetuned-model")
 ```
 
 In the above code, we set up the training arguments, data collator, and trainer for fine-tuning the model. We specify the output directory, batch size, number of epochs, logging directory, and other parameters. Finally, we call the `train` method to start the fine-tuning process.
@@ -338,11 +443,9 @@ In the above code, we set up the training arguments, data collator, and trainer 
 ## Step 6: Save the Fine-Tuned Model
 
 ```python
-
 from peft import PeftModel, PeftConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-peft_model_id = "./finetuned-model"
+peft_model_id = "./gemma-finetuned-model"
 peft_config = PeftConfig.from_pretrained(peft_model_id)
 
 # Load the base model
@@ -354,31 +457,44 @@ model = PeftModel.from_pretrained(base_model, peft_model_id)
 # Merge LoRA weights into base model
 merged_model = model.merge_and_unload()
 
-merged_model.save_pretrained("./merged")
-
+merged_model.save_pretrained("./gemma-merged")
 tokenizer = AutoTokenizer.from_pretrained(peft_config.base_model_name_or_path)
-tokenizer.save_pretrained("./merged");
+tokenizer.save_pretrained("./gemma-merged")
 ```
 
 Above code saves the fine-tuned PEFT model by merging the LoRA weights into the base model and saving the merged model along with the tokenizer.
 
-## Step 6.5: Evaluation
+## Step 7: Evaluation
 
-Before deploying, it is critical to evaluate the model. In a real-world engineering workflow, you shouldn't rely on "vibes" alone.
-
-### Qualitative Evaluation
-
-Compare the base model's response vs. the fine-tuned model's response for the same prompt.
+Let's test our fine-tuned model.
 
 ```python
-def generate_response(model, tokenizer, prompt):
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    outputs = model.generate(**inputs, max_new_tokens=100)
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+tuned_model = AutoModelForCausalLM.from_pretrained("./gemma-merged", dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained("./gemma-merged")
 
-test_prompt = "I feel anxious about my future."
-print("Base Model:", generate_response(base_model, tokenizer, test_prompt))
-print("Fine-Tuned Model:", generate_response(merged_model, tokenizer, test_prompt))
+messages = [
+    {"role": "user", "content": "You are a assistant responsible for classifying mental health status.I feel like i am the only one going through this."}
+]
+
+# Prepare inputs with attention mask, explicitly adding the generation prompt for the model's turn
+input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
+attention_mask = torch.ones_like(input_ids)
+
+# Generate output
+outputs = tuned_model.generate(
+    input_ids,
+    attention_mask=attention_mask,
+    max_new_tokens=100,
+    do_sample=True,
+    pad_token_id=tokenizer.eos_token_id 
+)
+
+# Extract the model's newly generated text
+input_len = input_ids.shape[1]
+generated_tokens_tensor = outputs[0, input_len:]
+decoded_response = tokenizer.decode(generated_tokens_tensor, skip_special_tokens=True)
+
+print(decoded_response)
 ```
 
 ### Quantitative Evaluation
@@ -388,7 +504,7 @@ For a robust pipeline, consider:
 1. **Perplexity**: Measures how well the model predicts the sample data. Lower is better.
 2. **LLM-as-a-Judge**: Use a stronger model (like GPT-4) to grade the responses of your fine-tuned model against a gold standard.
 
-## Step 7: Deploy the Fine-Tuned Model
+## Step 8: Deploy the Fine-Tuned Model
 
 It is not possible to train bigger models on local machine, thats why we need to use cloud service to train and deploy. We can use AWS Sagemaker. Luckily there is great support for Huggingface models on Sagemaker.
 
@@ -443,15 +559,14 @@ In the above code, we create a `HuggingFaceModel` using the model data from the 
 One can test the endpoint using the following code:
 
 ```python
-prompt = """<|im_start|>system
-You are a mental health assistant. Based on the user's description, respond with a single sentence indicating the most relevant diagnosis from the mental health domain.<|im_end|>
-<|im_start|>user
-I feel hopeless and overwhelmed by my financial situation<|im_end|>
-<|im_start|>assistant
-"""
+messages = [
+    {"role": "user", "content": "You are a assistant responsible for classifying mental health status.I feel like i am the only one going through this."}
+]
+
+input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True, tokenize=False)["input_ids"][0].tolist()
 
 response = predictor.predict({
-    "inputs": prompt,
+    "inputs": input_ids,
     "parameters": {
         "max_new_tokens": 100,
         "do_sample": True,
@@ -470,4 +585,4 @@ Alternatively, one can get the instance endpoint in the sagemaker endpoint secti
 
 ## Conclusion
 
-In this blog, we explored the concept of fine-tuning large language models (LLMs) using parameter-efficient techniques like LoRA. We discussed the advantages of fine-tuning over other methods like RAG and demonstrated how to fine-tune a Qwen model on a mental health counseling dataset. Finally, we covered the deployment of the fine-tuned model using AWS SageMaker.
+In this blog, we explored the concept of fine-tuning large language models (LLMs) using parameter-efficient techniques like LoRA. We discussed the advantages of fine-tuning over other methods like RAG and demonstrated how to fine-tune a **Gemma 3** model on a mental health counseling dataset.
