@@ -49,6 +49,7 @@ tokenizer = AutoTokenizer.from_pretrained(
 model = AutoModelForCausalLM.from_pretrained(
     base_model_id,
     device_map="auto",
+    attn_implementation="eager",
     # quantization_config=quantization_config if is_colab else None,
 )
 
@@ -350,7 +351,8 @@ tokenizer = AutoTokenizer.from_pretrained(save_dir)
 base_model = AutoModelForCausalLM.from_pretrained(
     base_model_id,
     torch_dtype=torch.float32,
-    device_map="auto"
+    device_map="auto",
+    attn_implementation="eager",
 )
 
 model = PeftModel.from_pretrained(base_model, save_dir)
