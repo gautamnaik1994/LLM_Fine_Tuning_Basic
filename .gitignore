@@ -7,3 +7,7 @@ merged
 gemma-merged
 finetuned-model-gemma
 finetuned-model-gemma
+gemma-lora-adapter_2
+gemma-lora-adapter
+gemma-finetuned-model
+archive.tar.gz

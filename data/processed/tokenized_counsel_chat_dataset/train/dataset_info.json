@@ -1,0 +1,69 @@
+{
+  "builder_name": "csv",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "counsel-chat",
+  "dataset_size": 4212643,
+  "description": "",
+  "download_checksums": {
+    "hf://datasets/nbertagnolli/counsel-chat@17501f72697cf8018aaf496162e9dc1408a64e67/20220401_counsel_chat.csv": {
+      "num_bytes": 4129977,
+      "checksum": null
+    }
+  },
+  "download_size": 4129977,
+  "features": {
+    "input_ids": {
+      "feature": {
+        "dtype": "int32",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "labels": {
+      "feature": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "attention_mask": {
+      "feature": {
+        "dtype": "int8",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "prompt_input_ids": {
+      "feature": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    },
+    "prompt_attention_mask": {
+      "feature": {
+        "dtype": "int64",
+        "_type": "Value"
+      },
+      "_type": "Sequence"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 8342620,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 4212643,
+      "num_examples": 2775,
+      "dataset_name": "counsel-chat"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}
