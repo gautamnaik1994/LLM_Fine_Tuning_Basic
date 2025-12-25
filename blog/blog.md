@@ -23,14 +23,14 @@ bannerImage: llm-fine-tuning.png
 
 ## Introduction
 
-Assume that you built a kickass AI application using a large language model (LLM) like GPT-4 or LLaMA. You showed it to your teammates, your manager, your client. Everyone is happy. You get the go ahead to deploy it to production.
+Assume that you built a kickass AI application using a LLM(Large Language Model) like GPT-5 or Gemini 3. You showed it to your teammates, your manager, your client. Everyone is happy. You get the go ahead to deploy it to production.
 
 After 1 month, your client comes back to you. He is not happy with the cost of running the application. The inference cost is too high. Instead of saving cost, the application is costing more money than before. He wants you to reduce the cost of running the application.
-You think to yourself, "Hmm, maybe I can fine-tune a smaller model on my specific use case. That should reduce the inference cost significantly". You replace the model, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
+You think to yourself, "Hmm, maybe I can use a cheaper model. This should reduce the inference cost significantly". You replace the model, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
 
 After 3 months, your client comes back to you again. This time, he is not happy with the quality of the responses from the model. The model is not able to handle some specific queries related to his domain. He wants you to improve the quality of the responses. You think to yourself, "Hmm, maybe I can fine-tune the model further on more specific data related to his domain". You gather more data, fine-tune the model again, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
 
-Above is an example of how fine-tuning can help improve the performance and reduce the cost of running an AI application. Fine-tuning allows you to adapt a pre-trained model to your specific use case, making it more efficient and effective. In the following sections, we will explore how to fine-tune large language models (LLMs). We will also discuss how to deploy the fine-tuned models using AWS SageMaker.
+Above is an example of how fine-tuning can help improve the performance and reduce the cost of running an AI application. Fine-tuning allows you to adapt a pre-trained model to your specific use case, making it more efficient and effective. In the following sections, we will explore how to fine-tune large language models (LLMs) end-to-end with a practical notebook walkthrough.
 
 ## What exactly is Fine-Tuning?
 
@@ -82,14 +82,78 @@ QLoRA takes more time as compared to LoRA, but consumes less memory during train
 
 ## Let's Fine-Tune a Model
 
-In this blog, we will focus on PEFT using LoRA due to its efficiency and effectiveness for many use cases.
+In this hands-on section, we will fine-tune a small instruction-tuned model using **LoRA** (a PEFT technique). We will be using pure PyTorch without high-level abstractions like `Hugging Face Trainer` to illustrate the core concepts and the iternals of fine-tuning.
 
-We will use Qwen/Qwen1.5-0.5B-Chat model from Qwen series by Alibaba for demonstration purposes. However, the same concepts can be applied to other LLMs like GPT, LLaMA, etc. We will fine-tune it on counsel chat dataset from Huggingface which contains mental health related questions and answers.  
-Basically we will build a mental health chatbot using fine-tuned Qwen model. Note that this is just for demonstration purposes. In real world, mental health related applications should be built with extreme caution and after consulting domain experts.
+We will use **`google/gemma-3-270m-it`** (Gemma 3, 270M parameters, instruction-tuned) and the **Counsel Chat** dataset from Hugging Face (`nbertagnolli/counsel-chat`).
 
-The full code for this notebook is available [here](https://github.com/your-repo/your-notebook).
+The goal for this demo is intentionally simple: take a user message and have the model generate a short “classification-like” response (the dataset’s `topic`) in natural language.
 
-## Step 1: Load the Dataset
+> **Note**: This dataset contains mental-health-related text. Please do not use it for real medical advice or diagnosis or in production systems.
+
+The code in this section mirrors the notebook `notebooks/Gemma_FineTuning.ipynb`. Some parts are simplified for clarity.
+
+## Step 1: Load the Pre-trained Gemma Model
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "google/gemma-3-270m-it"
+
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+  model_id,
+  device_map="auto",
+  attn_implementation="eager", # Gemma-specific optimization. Added after the model triggered a warning
+)
+
+tokenizer.padding_side = "right" # Found out that padding was on left by default, and fine tuning required right padding.
+```
+
+Above code downloads the pre-trained Gemma model + tokenizer from Hugging Face.
+
+### Quick sanity-check : Run inference before fine-tuning
+
+Before you train anything, it’s worth seeing what the base model does on your task.
+
+```python
+import torch
+
+messages = [
+  {"role": "system", "content": "You are a assistant responsible for classifying mental health status."},
+  {"role": "user", "content": "I am depressed and want to die"},
+]
+
+input_ids = tokenizer.apply_chat_template(
+  messages,
+  return_tensors="pt",
+  add_generation_prompt=True,
+).to(device)
+
+attention_mask = torch.ones_like(input_ids).to(device)
+
+outputs = model.generate(
+  input_ids,
+  attention_mask=attention_mask,
+  max_new_tokens=100,
+  do_sample=True,
+  pad_token_id=tokenizer.eos_token_id,
+  temperature=0.1,
+)
+
+input_len = input_ids.shape[1]
+generated_tokens = outputs[0, input_len:]
+print(tokenizer.decode(generated_tokens, skip_special_tokens=True))
+```
+
+Following is a sample output from the above code:
+
+```plaintext
+I understand. It's very difficult to say what's happening, but I can offer some resources and support to help you cope. Please reach out to a mental health professional or a crisis hotline. You can also contact the National Suicide Prevention Services at 988 and the Crisis Text Line at 741740 in the US.
+```
+
+This baseline output gives you a reference point: after fine-tuning you should see responses that look more like your training targets.
+
+## Step 2: Load the Dataset
 
 We will use counsel chat dataset from Huggingface which contains mental health related questions and answers. You can load the dataset using the following code. The dataset is available [here](https://huggingface.co/datasets/counselchat/counselchat).
 
@@ -97,179 +161,246 @@ We will use counsel chat dataset from Huggingface which contains mental health r
 from datasets import load_dataset
 
 ds = load_dataset("nbertagnolli/counsel-chat")
-
-# drop null
-ds = ds.filter(lambda x: x['questionText'] is not None)
-ds = ds.filter(lambda x: x['topic'] is not None)
 ```
 
-## Step 2: Load the Pre-trained Qwen Model
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-import torch
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_id = "google/gemma-3-270m-it"
-
-# Configure 4-bit quantization if interested in QLoRA
-quantization_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.float16,
-)
-
-
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-tokenizer.padding_side = "right" # While fine-tuning, padding should be on the right side
-
-model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    device_map="auto",
-    quantization_config=quantization_config # Remove this line for LoRA
-)
-```
-
-Above code will directly download the pre-trained Gemma model and tokenizer from Huggingface model hub.
-
-## Step 3: Preprocess the Dataset
+## Step 3: Preprocess the Dataset (Chat Formatting)
 
 We need to preprocess the dataset to convert it into a format suitable for training the Gemma model. The Gemma model expects the input in a specific format, so we will create a function to preprocess the data accordingly.
 
-First, we structure the data into a chat format:
+Following is a sample row from the dataset
 
-```python
-SYSTEM_PROMPT = "You are an assistant responsible for classifying mental health status."
-
-def build_chat(batch):
-    questions = batch["questionText"]
-    topics = batch["topic"]
-
-    batch_conversations = []
-
-    for q, t in zip(questions, topics):
-        batch_conversations.append([
-            {"role": "user", "content": SYSTEM_PROMPT + "\n" + q},
-            {"role": "assistant", "content": f"Based on what you've described, this sounds like '{t}'."}
-        ])
-
-    return {
-        "conversation": batch_conversations
-    }
-
-chat_dataset = ds.map(build_chat, batched=True)
+```json
+{
+  "questionText": "I have so many issues to address. I have a history of sexual abuse, I’m a breast cancer survivor and I am a lifetime insomniac. I have a long history of depression and I’m beginning to have anxiety. I have low self esteem but I’ve been happily married for almost 35 years.\n  I’ve never had counseling about any of this. Do I have too many issues to address in counseling?",
+  "topic": "depression",
+}
 ```
 
-Next, we tokenize the data and mask the user prompts so the model only learns to generate the assistant's response:
+Our initial goal is to format the data into a chat-like structure that Gemma understands.
 
+### Why chat formatting matters
+
+Gemma is instruction-tuned and expects a particular chat syntax (special tokens, turn separators, etc.). The tokenizer’s `apply_chat_template(...)` is the reliable way to produce the *exact* text format the model was trained with.
+
+Following s the chat template used in the notebook.
+  
 ```python
-MAX_LENGTH = 512
-IGNORE_INDEX = -100
-
-def tokenize_and_mask_labels(batch):
-    tokenized_results = []
-
-    for conversation in batch['conversation']:
-        # 1. Format the full conversation string using the chat template
-        full_text = tokenizer.apply_chat_template(
-            conversation,
-            tokenize=False,
-            add_generation_prompt=False
-        ).removeprefix('<bos>')
-
-        # 2. Format the prompt-only string
-        prompt_conversation = conversation[:-1]
-        prompt_text = tokenizer.apply_chat_template(
-            prompt_conversation,
-            tokenize=False,
-            add_generation_prompt=True 
-        ).removeprefix('<bos>')
-
-        # 3. Tokenize both texts
-        full_tokenized = tokenizer(
-            full_text,
-            max_length=MAX_LENGTH,
-            truncation=True,
-            padding="max_length",
-            return_tensors=None,
-        )
-
-        prompt_tokenized = tokenizer(
-            prompt_text,
-            max_length=MAX_LENGTH,
-            truncation=True,
-            padding=False,
-            return_tensors=None,
-        )
-
-        # 4. Create the labels array (shifted input_ids)
-        labels = full_tokenized["input_ids"].copy()
-
-        # 5. Mask the prompt tokens
-        prompt_length = len(prompt_tokenized["input_ids"])
-        mask_end = min(prompt_length, len(labels))
-        labels[:mask_end] = [IGNORE_INDEX] * mask_end
-
-        # 6. Shift the labels (standard CLM)
-        input_ids = full_tokenized["input_ids"][:-1]
-        labels = labels[1:]
-        attention_mask = full_tokenized["attention_mask"][:-1]
-
-        tokenized_results.append({
-            "input_ids": input_ids,
-            "labels": labels,
-            "attention_mask": attention_mask
-        })
-
-    return {
-        "input_ids": [r["input_ids"] for r in tokenized_results],
-        "labels": [r["labels"] for r in tokenized_results],
-        "attention_mask": [r["attention_mask"] for r in tokenized_results]
-    }
-
-tokenized_dataset = chat_dataset.map(
-    tokenize_and_mask_labels,
-    batched=True,
-    remove_columns=chat_dataset["train"].column_names
-)
+print(tokenizer.get_chat_template())
 ```
 
-If you notice in the above code, we are masking everything before the assistant's response in the labels. This is important because we only want the model to learn to generate the assistant's response based on the user's input. This is important because during training, we want the model to focus on generating the correct response rather than trying to predict the entire conversation history.
+```jinja
+{{ bos_token }}
+{%- if messages[0]['role'] == 'system' -%}
+    {%- if messages[0]['content'] is string -%}
+        {%- set first_user_prefix = messages[0]['content'] + '
+' -%}
+    {%- else -%}
+        {%- set first_user_prefix = messages[0]['content'][0]['text'] + '
+' -%}
+    {%- endif -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set first_user_prefix = "" -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- if (message['role'] == 'assistant') -%}
+        {%- set role = "model" -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+    {{ '<start_of_turn>' + role + '
+' + (first_user_prefix if loop.first else "") }}
+    {%- if message['content'] is string -%}
+        {{ message['content'] | trim }}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'image' -%}
+                {{ '<start_of_image>' }}
+            {%- elif item['type'] == 'text' -%}
+                {{ item['text'] | trim }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{ raise_exception("Invalid content type") }}
+    {%- endif -%}
+    {{ '<end_of_turn>
+' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{'<start_of_turn>model
+'}}
+{%- endif -%}
+```
 
-### What actually happens during preprocessing?
+For the sake of simplicity of explanation, we will only use the following data
 
-<aside>
+```json
+{
+  "questionText": "I am depressed",
+  "topic": "depression",
+}
+```
 
-</aside>
+```python
 
-## Step 4: Set up Lora configuration
+SYSTEM_PROMPT = "You are an assistant."
 
-<!-- Add target modules for Qwen model. The target modules are the layers of the model that we want to fine-tune using LoRA. In this case, we will target the attention layers of the Qwen model.
-Why these target modules? Because Qwen model uses QKV attention mechanism and these are the projection layers for query, key, value and output respectively. By applying LoRA to these layers, we can effectively adapt the attention mechanism of the model to our specific task.
-The Attention layers are crucial components of transformer-based models like Qwen. They allow the model to focus on different parts of the input sequence when making predictions. By fine-tuning these layers using LoRA, we can help the model learn to pay attention to the most relevant information for our specific task, which in this case is mental health counseling. -->
+messages = [
+            {"role": "user", "content": SYSTEM_PROMPT + "\n" + questionText},
+            {"role": "assistant", "content": f"This sounds like '{topic}'."}
+        ]
+```
+
+After formatting, the above example would look like this:
+
+```xml
+<bos><start_of_turn>user
+You are a assistant.
+
+I am depressed<end_of_turn>
+<start_of_turn>model
+```
+
+But we cannot directly pass this text to model. We need to convert this into tokens using the tokenizer. We will do that in the next step.
+
+## Step 5: Tokenize + Create Labels (Mask the Prompt)
+
+Now that we have the conversations formatted, we need to tokenize them and create labels for training.
+
+Fine-tuning here is **supervised fine-tuning (SFT)**: we show the model a full prompt + desired answer, then compute loss only on the answer tokens.
+
+To do that, we build `labels` from `input_ids`, but we set prompt tokens to `-100` (the ignore index). PyTorch’s cross-entropy loss skips positions where the label is `-100`.
+
+This is the most important step.
+
+For the sake of better explanation, We have reformatted the data into the following structure:
+
+```python
+messages = {
+    "messages": [
+        [{"role": "user", "content": "You are an assistant.\nI am depressed"}]
+    ],
+    "response": ["This sounds like depression."],
+    "conversation": [
+        [
+            {"role": "user", "content": "You are an assistant.\nI am depressed"},
+            {"role": "assistant", "content": "This sounds like depression."},
+        ]
+    ],
+}
+```
+
+After applying the chat template, and tokenizing, we get the following token ids:
+
+```
+Full text:-
+<start_of_turn>user
+You are an assistant.
+I am depressed<end_of_turn>
+<start_of_turn>model
+This sounds like depression.<end_of_turn>
+
+Prompt text:-                
+<start_of_turn>user
+You are an assistant.
+I am depressed<end_of_turn>
+<start_of_turn>model
+
+Full tokenized input_ids:     [2, 105, 2364, 107, 3048, 659, 614, 16326, 236761, 107, 236777, 1006, 41155, 106, 107, 105, 4368, 107, 2094, 12054, 1133, 17998, 236761, 106, 107]
+Prompt tokenized input_ids:   [2, 105, 2364, 107, 3048, 659, 614, 16326, 236761, 107, 236777, 1006, 41155, 106, 107, 105, 4368, 107]
+Labels:                       [-100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, 2094, 12054, 1133, 17998, 236761, 106, 107]
+Input IDs shifted:            [2, 105, 2364, 107, 3048, 659, 614, 16326, 236761, 107, 236777, 1006, 41155, 106, 107, 105, 4368, 107, 2094, 12054, 1133, 17998, 236761, 106]
+Labels shifted:               [-100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, -100, 2094, 12054, 1133, 17998, 236761, 106, 107]
+```
+
+Look closely at the `labels`: the prompt tokens are `-100`, and only the response tokens have valid labels. This way, when we compute loss, only the response tokens contribute.
+This means the model is only penalized for getting the response wrong, not the prompt.
+
+Now look at the shifted `input_ids` and `labels`: they are shifted by one position. The last token in the `input_ids` has been removed. This is because, during training, the model predicts the next token given all previous tokens.
+
+Now look closely at the shifted labels: The first `-100` has been removed. This is removed so that the labels align with the shifted `input_ids`. The model predicts the token at position `t` using the input tokens up to position `t-1`.
+
+## Step 6: Build a Dataloader (Padding + Batching)
+
+While tokenizing, we ignored the length of sequences by setting `padding=False`. This means that each sequence can have a different length. However, for batching, we need to pad the sequences to the same length. The model requires inputs to be of the same length within a batch.
+To handle this, we create a custom collator function that pads the `input_ids` and `labels` to the maximum length in the batch. We use `torch.nn.utils.rnn.pad_sequence` for padding.
+
+**What is a collator?**
+As a training dataset can be of huge size, it is not feasible to load the entire dataset into memory at once. Instead, we load the data in batches during training. Now assume that we want to do some custom preprocessing on each batch just before feeding it to the model. This is where collators come into play. A collator is a function that takes a list of samples from the dataset and processes them into a batch. It can perform operations like padding, stacking, or any other custom preprocessing required for the model.
+
+In our case, we avoided padding during tokenization to keep the dataset compact. Instead, we handle padding in the collator function.
+
+This collator pads:
+
+- `input_ids` with `tokenizer.pad_token_id`
+- `labels` with `-100` (so padding tokens don’t contribute to loss)
+
+```python
+from torch.nn.utils.rnn import pad_sequence
+
+def causal_lm_collator(batch):
+  input_ids = [x["input_ids"] for x in batch]
+  labels = [x["labels"] for x in batch]
+
+  input_ids = pad_sequence(
+    input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
+  )
+  labels = pad_sequence(
+    labels, batch_first=True, padding_value=-100
+  )
+
+  attention_mask = (input_ids != tokenizer.pad_token_id).long()
+  return {
+    "input_ids": input_ids,
+    "labels": labels,
+    "attention_mask": attention_mask,
+  }
+```
+
+## Step 7: Set up LoRA (PEFT)
 
 Add target modules for Gemma model. The target modules are the layers of the model that we want to fine-tune using LoRA.
 
 ```python
-from peft import LoraConfig, get_peft_model, TaskType
-
 lora_config = LoraConfig(
-    r=8, # Rank of the low-rank matrices. Lower rank = fewer parameters to train.
-    lora_alpha=16, # Scaling factor. A good rule of thumb is alpha = 2 * r.
+    r=8,
+    lora_alpha=16,
     lora_dropout=0.05,
     bias="none",
     task_type=TaskType.CAUSAL_LM, 
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
 )
-peft_model = get_peft_model(model, lora_config)
-peft_model.print_trainable_parameters()
 ```
+
+```python
+from peft import prepare_model_for_kbit_training
+
+train_model = prepare_model_for_kbit_training(model)
+peft_model = get_peft_model(train_model, lora_config)
+
+peft_model.enable_input_require_grads()
+peft_model.gradient_checkpointing_enable()
+peft_model.config.use_cache = False # disable cache for gradient checkpointing
+
+```
+
+Note the `prepare_model_for_kbit_training` function. As per Hugginface docs:
+
+This method wraps the entire protocol for preparing a model before running a training. This includes:
+
+- Cast the layernorm in fp32
+- Making output embedding layer require grads
+- Add the upcasting of the lm head to fp32
+- Freezing the base model layers to ensure they are not updated during training
 
 > **Hyperparameter Intuition**:
 >
-> * **Rank (r)**: Determines the capacity of the adapter. Higher `r` means more parameters and potentially better performance, but higher memory usage. `r=8` is a standard starting point.
-> * **Alpha**: Scales the learned weights. If you increase `r`, you usually increase `alpha` proportionally.
+> - **Rank (r)**: Determines the capacity of the adapter. Higher `r` means more parameters and potentially better performance, but higher memory usage. `r=8` is a standard starting point.
+> - **Alpha**: Scales the learned weights. If you increase `r`, you usually increase `alpha` proportionally.
 
 Above code sets up the LoRA configuration for fine-tuning the Gemma model. You can adjust the parameters based on your requirements. Then we wrap the pre-trained model with PEFT using the `get_peft_model` function.
 
@@ -407,182 +538,248 @@ PeftModelForCausalLM(
 
 As you can see, only the layers specified in `target_modules` are modified to include LoRA layers. The rest of the model remains unchanged. This is the key to parameter-efficient fine-tuning.
 
-## Step 5: Training the Model
+## Step 8: Training Loop (Manual PyTorch)
+
+The notebook uses a manual training loop instead of `Trainer`. This is great for learning because you can see exactly what happens:
+
+- forward pass → logits
+- compute loss with `ignore_index=-100`
+- backprop with gradient accumulation
+- optimizer + scheduler step
 
 ```python
-from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
 
-training_args = TrainingArguments(
-    output_dir="./gemma-finetuned-model",
-    per_device_train_batch_size=4,
-    num_train_epochs=3,
-    logging_dir='./logs',
-    logging_steps=100,
-    save_strategy="no",
-    label_names=["labels"],
-    save_total_limit=1,
-    report_to="none",
-    learning_rate=0.0001,
+criterion = nn.CrossEntropyLoss(ignore_index=-100)
+
+total_steps = len(train_dataloader) * 3
+scheduler = get_cosine_schedule_with_warmup(
+  optimizer,
+  num_warmup_steps=50,
+  num_training_steps=total_steps,
 )
 
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-trainer = Trainer(
-    model=peft_model,
-    args=training_args,
-    train_dataset=tokenized_dataset["train"], # Assuming we use the train split
-    processing_class=tokenizer,
-    data_collator=data_collator,
-)
-trainer.train()
-trainer.save_model("./gemma-finetuned-model")
+scaler = GradScaler()
 ```
 
-In the above code, we set up the training arguments, data collator, and trainer for fine-tuning the model. We specify the output directory, batch size, number of epochs, logging directory, and other parameters. Finally, we call the `train` method to start the fine-tuning process.
+**What is `GradScaler` and `autocast`?**
 
-## Step 6: Save the Fine-Tuned Model
+`autocast` and `GradScaler` are the two main building blocks of PyTorch Automatic Mixed Precision (AMP). AMP improves training speed and reduces memory usage by running many operations in lower precision (typically `float16`/`bfloat16`) while keeping numerically sensitive parts in `float32`.
+
+Mixed precision works best on hardware optimized for low-precision math (notably NVIDIA GPUs with Tensor Cores, and increasingly other backends such as AMD and Apple Silicon). The trade-off is that `float16` has a smaller dynamic range, so gradients can **underflow** (become 0) or **overflow** (become `inf`/`NaN`) more easily.
+
+`GradScaler` solves this with **dynamic loss scaling**:
+
+- It scales up the loss before backpropagation, which scales up gradients and helps prevent underflow.
+- Before `optimizer.step()`, it unscales gradients back to their true magnitude so the update is correct.
+- It automatically tunes the scale factor: if `inf`/`NaN` is detected, it lowers the scale for the next step; otherwise, it may gradually increase it for better utilization.
+
+GradScaler doesn’t permanently “transform” the weights. It temporarily scales the loss (and therefore the gradients) to avoid float16 underflow, then unscales gradients back right before the optimizer updates the weights.
+
+Numeric toy example (single weight)
+Minimal PyTorch snippet demonstrating how `GradScaler` works:
 
 ```python
-from peft import PeftModel, PeftConfig
+import torch
+from torch.amp.grad_scaler import GradScaler
+from torch.amp.autocast_mode import autocast
 
-peft_model_id = "./gemma-finetuned-model"
-peft_config = PeftConfig.from_pretrained(peft_model_id)
 
-# Load the base model
-base_model = AutoModelForCausalLM.from_pretrained(peft_config.base_model_name_or_path, return_dict=True)
+w = torch.tensor([1.0], device="cuda", requires_grad=True)
+opt = torch.optim.SGD([w], lr=0.1)
+scaler = GradScaler()
 
-# Load adapter into base model
-model = PeftModel.from_pretrained(base_model, peft_model_id)
+# Toy loss that produces a tiny gradient: loss = 1e-8 * w  ->  dloss/dw = 1e-8
+with autocast(device_type="cuda", dtype=torch.float16):
+    loss = (w * 1e-8).sum()
 
-# Merge LoRA weights into base model
+# backward on *scaled* loss (internally multiplies loss by scaler's scale)
+scaler.scale(loss).backward()
+
+# gradients are currently scaled (larger magnitude)
+print("Scaled grad:", w.grad.item()) # 0.0006553599960170686
+
+# step() will unscale grads, check inf/nan, then call opt.step() safely
+scaler.step(opt)
+scaler.update()
+opt.zero_grad()
+
+print("Updated w:", w.item())  # Should be 0.999999999 but will get 1.0 as the change is below float32/float16 display precision
+```
+
+Following is the full training loop with gradient accumulation:
+
+```python
+num_epochs = 3
+accum_steps = 4
+num_training_steps = num_epochs * len(train_dataloader) // accum_steps
+
+progress_bar = tqdm(range(num_training_steps))
+
+peft_model.train()
+optimizer.zero_grad()
+
+for epoch in range(num_epochs):
+    for step, batch in enumerate(train_dataloader):
+        with autocast(device_type=device, dtype=torch.float16):
+            outputs = peft_model(
+                input_ids=batch["input_ids"].to(device),
+                attention_mask=batch["attention_mask"].to(device),
+            )
+            logits = outputs.logits
+            labels = batch["labels"].to(device)
+            loss = criterion(
+                logits.view(-1, logits.size(-1)),
+                labels.view(-1)
+            )
+            loss = loss / accum_steps
+        scaler.scale(loss).backward()
+
+        if (step + 1) % accum_steps == 0:
+            print(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss.item() * accum_steps:.4f}")
+
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+            scheduler.step()
+            progress_bar.update(1)
+
+    if (step + 1) % accum_steps != 0:
+        print(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss.item() * accum_steps:.4f}")
+
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        scheduler.step()
+        progress_bar.update(1)
+```
+
+### What’s gradient accumulation?
+
+If your GPU can only fit a small batch (e.g., batch size 2), accumulation lets you simulate a larger effective batch by summing gradients over multiple steps before updating weights.
+
+## Step 9: Save the LoRA Adapter
+
+With LoRA, you typically save just the adapter weights (small), not the entire base model (large).
+
+```python
+save_dir = "gemma-lora-adapter"
+peft_model.save_pretrained(save_dir)
+tokenizer.save_pretrained(save_dir)
+```
+
+## Step 10: Inference After Fine-Tuning (Load Base + Adapter)
+
+To run inference, you load the original base model and then attach the adapter.
+
+```python
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+
+base_model_id = "google/gemma-3-270m-it"
+
+tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+
+base_model = AutoModelForCausalLM.from_pretrained(
+    base_model_id,
+    torch_dtype=torch.float32,
+    device_map="auto",
+    attn_implementation="eager",
+)
+
+model = PeftModel.from_pretrained(base_model, save_dir)
+
+print("Tokenizer vocab size:", len(tokenizer)) # Tokenizer vocab size: 262145
+print("Model embedding size:", model.get_input_embeddings().weight.shape[0]) # Model embedding size: 262144
+```
+
+Notice that the tokenizer vocab size (262145) is one more than the model embedding size (262144).
+This lead to a CUDA error, but on mackbook it ran without error. To fix this, we can resize the model embeddings to match the tokenizer vocab size.
+
+```python
+if device == "mps":
+    model.to("cpu")
+model.resize_token_embeddings(len(tokenizer))
+model.to(device)
+model.eval();
+
+print("Tokenizer vocab size:", len(tokenizer)) # Tokenizer vocab size: 262145
+print("Model embedding size:", model.get_input_embeddings().weight.shape[0]) # Model embedding size: 262145
+```
+
+```python
+messages = [
+    {"role": "user", "content": "You are a assistant responsible for classifying mental health status. I am bored and sad"}
+]
+
+input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True,).to(device)
+attention_mask = torch.ones_like(input_ids).to(device)
+
+with torch.no_grad():
+    outputs = model.generate(
+        input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=100,
+        do_sample=True,
+        pad_token_id=tokenizer.eos_token_id,
+        temperature=0.1,
+    )
+
+input_len = input_ids.shape[1]
+generated_tokens_tensor = outputs[0, input_len:]
+decoded_response = tokenizer.decode(generated_tokens_tensor, skip_special_tokens=True)
+
+print(decoded_response) # Based on what you've described, this sounds like 'depression'.
+```
+
+## Step 12: Merge the Adapter (Optional)
+
+Adapters are great for iteration (small artifacts). For deployment, you sometimes want a single merged model directory.
+
+```python
 merged_model = model.merge_and_unload()
-
 merged_model.save_pretrained("./gemma-merged")
-tokenizer = AutoTokenizer.from_pretrained(peft_config.base_model_name_or_path)
 tokenizer.save_pretrained("./gemma-merged")
 ```
 
-Above code saves the fine-tuned PEFT model by merging the LoRA weights into the base model and saving the merged model along with the tokenizer.
-
-## Step 7: Evaluation
-
-Let's test our fine-tuned model.
+Then load the merged model for inference:
 
 ```python
-tuned_model = AutoModelForCausalLM.from_pretrained("./gemma-merged", dtype="auto")
+tuned_model = AutoModelForCausalLM.from_pretrained("./gemma-merged", device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained("./gemma-merged")
 
 messages = [
-    {"role": "user", "content": "You are a assistant responsible for classifying mental health status.I feel like i am the only one going through this."}
+    {"role": "user", "content": "You are a assistant responsible for classifying mental health status. I feel anxious and stressed all the time."}
 ]
 
-# Prepare inputs with attention mask, explicitly adding the generation prompt for the model's turn
-input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
-attention_mask = torch.ones_like(input_ids)
 
-# Generate output
+input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True).to(device)
+attention_mask = torch.ones_like(input_ids).to(device)
+
 outputs = tuned_model.generate(
     input_ids,
     attention_mask=attention_mask,
     max_new_tokens=100,
     do_sample=True,
-    pad_token_id=tokenizer.eos_token_id 
+    pad_token_id=tokenizer.eos_token_id,
+    temperature=0.1,
 )
 
-# Extract the model's newly generated text
 input_len = input_ids.shape[1]
 generated_tokens_tensor = outputs[0, input_len:]
 decoded_response = tokenizer.decode(generated_tokens_tensor, skip_special_tokens=True)
 
-print(decoded_response)
+print(decoded_response) # Based on what you've described, this sounds like 'stress'.
 ```
-
-### Quantitative Evaluation
-
-For a robust pipeline, consider:
-
-1. **Perplexity**: Measures how well the model predicts the sample data. Lower is better.
-2. **LLM-as-a-Judge**: Use a stronger model (like GPT-4) to grade the responses of your fine-tuned model against a gold standard.
-
-## Step 8: Deploy the Fine-Tuned Model
-
-It is not possible to train bigger models on local machine, thats why we need to use cloud service to train and deploy. We can use AWS Sagemaker. Luckily there is great support for Huggingface models on Sagemaker.
-
-You can deploy the fine-tuned model using AWS SageMaker or any other cloud service of your choice. The deployment process involves creating a model endpoint and configuring it to use the fine-tuned model for inference. You can refer to the AWS SageMaker documentation for detailed instructions on how to deploy models.
-
-We need to use a light weight ec2 instance for running the notebook instance. then we use the following code to create a Training job on Sagemaker. We should select an instance with GPU support for faster training.
-
-```python
-from sagemaker.huggingface import HuggingFace
-
-huggingface_estimator = HuggingFace(
-    entry_point='train.py',
-    source_dir='src',
-    instance_type='ml.g5.4xlarge',
-    instance_count=1,
-    role=role,
-    transformers_version='4.49.0',
-    pytorch_version='2.5.1',
-    py_version='py311',
-    base_job_name='finetune-llm',
-    hyperparameters={
-        
-    }
-)
-
-huggingface_estimator.fit()
-```
-
-In `train.py`, you can include the fine-tuning code we discussed earlier.
-
-After the training job is complete, the model gets saved to S3. You can then deploy the model using the following code:
-
-```python
-from sagemaker.huggingface import HuggingFaceModel
-
-huggingface_model = HuggingFaceModel(
-    model_data=huggingface_estimator.model_data,  # output of huggingface_estimator.model_data
-    role=role,
-    transformers_version='4.49.0',  # or any supported version
-    pytorch_version='2.6.0',        # confirmed supported
-    py_version='py312',             # use python 3.10 (common)
-)
-
-predictor = huggingface_model.deploy(
-    initial_instance_count=1,
-    instance_type='ml.g4dn.2xlarge'
-)
-```
-
-In the above code, we create a `HuggingFaceModel` using the model data from the training job and deploy it to an endpoint. We can choose instance type based on our requirements.
-
-One can test the endpoint using the following code:
-
-```python
-messages = [
-    {"role": "user", "content": "You are a assistant responsible for classifying mental health status.I feel like i am the only one going through this."}
-]
-
-input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True, tokenize=False)["input_ids"][0].tolist()
-
-response = predictor.predict({
-    "inputs": input_ids,
-    "parameters": {
-        "max_new_tokens": 100,
-        "do_sample": True,
-        "temperature": 0
-    }
-})
-
-generated = response[0]['generated_text']
-assistant_start = generated.find("<|im_start|>assistant\n") + len("<|im_start|>assistant\n")
-reply = generated[assistant_start:].strip().split("<|im_end|>")[0].strip()
-
-print("Assistant:", reply)
-```
-
-Alternatively, one can get the instance endpoint in the sagemaker endpoint section and use boto3 to invoke the endpoint.
 
 ## Conclusion
 
-In this blog, we explored the concept of fine-tuning large language models (LLMs) using parameter-efficient techniques like LoRA. We discussed the advantages of fine-tuning over other methods like RAG and demonstrated how to fine-tune a **Gemma 3** model on a mental health counseling dataset.
+In this blog, we explored fine-tuning LLMs using parameter-efficient techniques like LoRA and walked through a complete Gemma 3 fine-tuning pipeline:
+
+- turn raw data into a chat-format prompt/response
+- tokenize and **mask prompt tokens** so loss trains on the answer
+- add LoRA adapters to attention projections
+- run a simple training loop with gradient accumulation
+- save adapters and optionally merge them into a single deployable model
+
+If you want, I can also update this post with a small “common failure modes + fixes” section (e.g., tokenization mismatches, masking errors, and why outputs look empty) while keeping it concise.
