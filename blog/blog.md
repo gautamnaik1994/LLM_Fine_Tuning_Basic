@@ -267,7 +267,7 @@ I am depressed<end_of_turn>
 
 But we cannot directly pass this text to model. We need to convert this into tokens using the tokenizer. We will do that in the next step.
 
-## Step 5: Tokenize + Create Labels (Mask the Prompt)
+## Step 4: Tokenize + Create Labels (Mask the Prompt)
 
 Now that we have the conversations formatted, we need to tokenize them and create labels for training.
 
@@ -324,7 +324,7 @@ Now look at the shifted `input_ids` and `labels`: they are shifted by one positi
 
 Now look closely at the shifted labels: The first `-100` has been removed. This is removed so that the labels align with the shifted `input_ids`. The model predicts the token at position `t` using the input tokens up to position `t-1`.
 
-## Step 6: Build a Dataloader (Padding + Batching)
+## Step 5: Build a Dataloader (Padding + Batching)
 
 While tokenizing, we ignored the length of sequences by setting `padding=False`. This means that each sequence can have a different length. However, for batching, we need to pad the sequences to the same length. The model requires inputs to be of the same length within a batch.
 To handle this, we create a custom collator function that pads the `input_ids` and `labels` to the maximum length in the batch. We use `torch.nn.utils.rnn.pad_sequence` for padding.
@@ -361,7 +361,7 @@ def causal_lm_collator(batch):
   }
 ```
 
-## Step 7: Set up LoRA (PEFT)
+## Step 6: Set up LoRA (PEFT)
 
 Add target modules for Gemma model. The target modules are the layers of the model that we want to fine-tune using LoRA.
 
@@ -538,7 +538,7 @@ PeftModelForCausalLM(
 
 As you can see, only the layers specified in `target_modules` are modified to include LoRA layers. The rest of the model remains unchanged. This is the key to parameter-efficient fine-tuning.
 
-## Step 8: Training Loop (Manual PyTorch)
+## Step 7: Training Loop (Manual PyTorch)
 
 The notebook uses a manual training loop instead of `Trainer`. This is great for learning because you can see exactly what happens:
 
@@ -657,7 +657,7 @@ for epoch in range(num_epochs):
 
 If your GPU can only fit a small batch (e.g., batch size 2), accumulation lets you simulate a larger effective batch by summing gradients over multiple steps before updating weights.
 
-## Step 9: Save the LoRA Adapter
+## Step 8: Save the LoRA Adapter
 
 With LoRA, you typically save just the adapter weights (small), not the entire base model (large).
 
@@ -667,7 +667,7 @@ peft_model.save_pretrained(save_dir)
 tokenizer.save_pretrained(save_dir)
 ```
 
-## Step 10: Inference After Fine-Tuning (Load Base + Adapter)
+## Step 9: Inference After Fine-Tuning (Load Base + Adapter)
 
 To run inference, you load the original base model and then attach the adapter.
 
@@ -732,7 +732,7 @@ decoded_response = tokenizer.decode(generated_tokens_tensor, skip_special_tokens
 print(decoded_response) # Based on what you've described, this sounds like 'depression'.
 ```
 
-## Step 12: Merge the Adapter (Optional)
+## Step 10: Merge the Adapter (Optional)
 
 Adapters are great for iteration (small artifacts). For deployment, you sometimes want a single merged model directory.
 
@@ -771,6 +771,13 @@ decoded_response = tokenizer.decode(generated_tokens_tensor, skip_special_tokens
 
 print(decoded_response) # Based on what you've described, this sounds like 'stress'.
 ```
+
+## Deployment on AWS SageMaker
+
+To deploy the model on AWS SageMaker, you can follow these steps:
+
+- Create a Sagemaker environment. Use a cheap instance to host jupyter notebooks. We need a cheap instance because we will only use it to create a training job.
+- We will need to create a traning job in `train.py` file. This file will contain the code to fine-tune the model using the dataset. We will use the same code as above, but we will need to make some changes to read the dataset.
 
 ## Conclusion
 
