@@ -23,26 +23,80 @@ bannerImage: llm-fine-tuning.png
 
 ## Introduction
 
-Assume that you built a kickass AI application using a LLM(Large Language Model) like GPT-5 or Gemini 3. You showed it to your teammates, your manager, your client. Everyone is happy. You get the go ahead to deploy it to production.
+Assume that you built a kickass AI application using a LLM(Large Language Model) like **GPT-5** or **Gemini 3**. You showed it to your teammates, your manager, your client. Everyone is happy. You get the go ahead to deploy it to production.
 
 After 1 month, your client comes back to you. He is not happy with the cost of running the application. The inference cost is too high. Instead of saving cost, the application is costing more money than before. He wants you to reduce the cost of running the application.
-You think to yourself, "Hmm, maybe I can use a cheaper model. This should reduce the inference cost significantly". You replace the model, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
+You think to yourself, *Hmm, maybe I can use a cheaper model. This should reduce the inference cost significantly*. You replace the model, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
 
-After 3 months, your client comes back to you again. This time, he is not happy with the quality of the responses from the model. The model is not able to handle some specific queries related to his domain. He wants you to improve the quality of the responses. You think to yourself, "Hmm, maybe I can fine-tune the model further on more specific data related to his domain". You gather more data, fine-tune the model again, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
+After 3 months, your client comes back to you again. This time, he is not happy with the quality of the responses from the model. The model is not able to handle some specific queries related to his domain. He wants you to improve the quality of the responses. You think to yourself, *Hmm, maybe I can fine-tune the model further on more specific data related to his domain*. You gather more data, fine-tune the model again, test it with some use cases, and the results were satisfactory. Your client is happy again. You get the go ahead to deploy the model to production.
 
 Above is an example of how fine-tuning can help improve the performance and reduce the cost of running an AI application. Fine-tuning allows you to adapt a pre-trained model to your specific use case, making it more efficient and effective. In the following sections, we will explore how to fine-tune large language models (LLMs) end-to-end with a practical notebook walkthrough.
 
 ## What exactly is Fine-Tuning?
 
-![alt text](./diagrams/fine_tuning.svg)
+<ExpandableSeeMore>
+
+<Aside>
+
+The diagrams in this post are built using [D2 Lang](https://d2lang.com/). It uses a simple declarative syntax to create diagrams. One can easily animate, change theme, and customize the diagrams inside code editor itself. Here are list of extensions for popular code editors: [Extensions](https://d2lang.com/tour/extensions/)
+
+The advantage of using code to create diagrams instead of other design tools is that it is easy to version control, reuse, and modify without leaving the code editor.
+Here is the code for the fine-tuning diagram used in this post:
+
+```plaintext
+direction: right
+
+**.style.border-radius: 8
+**.style.font-color: "#333"
+
+pre_training: "Pre Training" {
+  style: {
+    fill: "transparent"
+    stroke-dash: 2
+  }
+  data: "Data" {
+    shape: stored_data
+  }
+  neural_network: "Neural Network" {
+    shape: hexagon
+  }
+  pretrained_model: "Pretrained Model" {
+    shape: oval
+  }
+}
+
+pre_training.data -> pre_training.neural_network
+pre_training.neural_network -> pre_training.pretrained_model
+fine_tuning: "Fine Tuning" {
+  style: {
+    fill: "transparent"
+    stroke-dash: 2
+  }
+  domain_specific_data: "Domain Specific Data" {
+    shape: stored_data
+  }
+  fine_tuned_model: "Fine Tuned Model" {
+    shape: oval
+  }
+}
+pre_training.pretrained_model -> fine_tuning.fine_tuned_model
+fine_tuning.domain_specific_data -> fine_tuning.fine_tuned_model
+
+pre_training -> fine_tuning
+```
+
+</Aside>
+</ExpandableSeeMore>
+
+![Fine tuning](./diagrams/fine_tuning.svg)
 
 Fine-tuning is the process of taking a pre-trained model and training it further on a specific dataset to adapt it to a particular task or domain. This involves updating the model's weights based on the new data while retaining the knowledge learned during the initial pre-training phase. Fine-tuning can be done using various techniques, such as full model fine-tuning, parameter-efficient fine-tuning (PEFT) which further includes methods like LoRA (Low-Rank Adaptation), and adapter-based fine-tuning.
 
 ## Comparison with RAG
 
-![alt text](./diagrams/rag.svg)
+![RAG](./diagrams/rag.svg)
 
-You might be wondering, "Is fine tuning the only way to adapt LLMs to specific tasks? Is there any other simpler way?" The answer is yes. Another popular approach is Retrieval-Augmented Generation (RAG). RAG combines pre-trained language models with external knowledge sources, such as databases or document collections, to enhance the model's ability to generate relevant and accurate responses. Instead of fine-tuning the entire model, RAG retrieves relevant information from the external source and incorporates it into the generation process.
+You might be wondering, *Is fine tuning the only way to adapt LLMs to specific tasks? Is there any other simpler way?* The answer is yes. Another popular approach is Retrieval-Augmented Generation (RAG). RAG combines pre-trained language models with external knowledge sources, such as databases or document collections, to enhance the model's ability to generate relevant and accurate responses. Instead of fine-tuning the entire model, RAG retrieves relevant information from the external source and incorporates it into the generation process.
 
 But here is the minor observation, Although RAG is simpler and preferable in many scenarios, it may not always be sufficient for highly specialized tasks that require deep domain knowledge or specific language patterns. Sometime you might want the model to reply in a specific way that is only possible through fine-tuning. In such cases, fine-tuning becomes necessary to achieve the desired performance.
 
@@ -57,42 +111,46 @@ There are several techniques for fine-tuning large language models, each with it
 Involves updating all the parameters of the pre-trained model. This approach can lead to better performance but requires significant computational resources and large amounts of labeled data.
 In this case all the weights of the model are updated during training. The disadvantage of this approach is that it is computationally expensive and requires a lot of memory. It can also lead to overfitting if the dataset is small. It can also lead to catastrophic forgetting, where the model forgets the knowledge it learned during pre-training.
 
-### Parameter-Efficient Fine-Tuning (PEFT)
+### PEFT
 
-Involves updating only a small subset of the model's parameters, making it more efficient in terms of computation and memory usage. Techniques like LoRA (Low-Rank Adaptation) fall under this category. PEFT methods are particularly useful when dealing with large models and limited computational resources. They allow for faster training times and reduced memory consumption while still achieving good performance on specific tasks.
+PEFT(Parameter-Efficient Fine-Tuning) involves updating only a small subset of the model's parameters, making it more efficient in terms of computation and memory usage. Techniques like LoRA (Low-Rank Adaptation) fall under this category. PEFT methods are particularly useful when dealing with large models and limited computational resources. They allow for faster training times and reduced memory consumption while still achieving good performance on specific tasks.
 
 PEFT is futher divided into multiple techniques like LoRA, Adapters, Prefix Tuning, etc. Among these, LoRA has gained significant popularity due to its simplicity and effectiveness. LoRA works by introducing low-rank matrices into the model's architecture, allowing for efficient adaptation without modifying the original weights extensively.
 
-## LoRA (Low-Rank Adaptation)
+## LoRA
 
-![alt text](./diagrams/lora.svg)
+![LoRA](./diagrams/lora.svg)
 
-LoRA is a parameter-efficient fine-tuning technique that introduces low-rank matrices into the model's architecture. Instead of updating all the weights of the model during fine-tuning, LoRA adds trainable low-rank matrices to certain layers of the model. During training, only these low-rank matrices are updated, while the original weights remain frozen. This significantly reduces the number of parameters that need to be updated, making the fine-tuning process more efficient.
+LoRA(Low-Rank Adaptation) is a parameter-efficient fine-tuning technique that introduces low-rank matrices into the model's architecture. Instead of updating all the weights of the model during fine-tuning, LoRA adds trainable low-rank matrices to certain layers of the model. During training, only these low-rank matrices are updated, while the original weights remain frozen. This significantly reduces the number of parameters that need to be updated, making the fine-tuning process more efficient.
 
 LoRA takes less time as compared to QLoRA, but consumes more memory during training as it does not use quantization. LoRA is suitable for scenarios where you have access to GPUs with sufficient memory to handle the model size.
 
-The research paper introducing LoRA can be found [here](https://arxiv.org/abs/2106.09685).
+Here is the research paper on [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685).
 
-## QLoRA (Quantized Low-Rank Adaptation)
+## QLoRA
 
-QLoRA is an extension of LoRA that combines low-rank adaptation with model quantization. In QLoRA, the pre-trained model is first quantized to reduce its memory footprint, and then LoRA is applied to fine-tune the quantized model. This approach allows for even more efficient fine-tuning, as the quantized model requires less memory and computational resources.
+QLoRA(Quantized Low-Rank Adaptation) is an extension of LoRA that combines low-rank adaptation with model quantization. In QLoRA, the pre-trained model is first quantized to reduce its memory footprint, and then LoRA is applied to fine-tune the quantized model. This approach allows for even more efficient fine-tuning, as the quantized model requires less memory and computational resources.
 In other words, QLoRA enables fine-tuning of large language models on resource-constrained hardware, such as consumer-grade GPUs, by leveraging both quantization and low-rank adaptation techniques at a cost of minimal performance degradation.
 
 QLoRA takes more time as compared to LoRA, but consumes less memory during training as it uses quantization. QLoRA is suitable for scenarios where you have access to GPUs with limited memory.
 
 ## Let's Fine-Tune a Model
 
-In this hands-on section, we will fine-tune a small instruction-tuned model using **LoRA** (a PEFT technique). We will be using pure PyTorch without high-level abstractions like `Hugging Face Trainer` to illustrate the core concepts and the iternals of fine-tuning.
+In this blog, we will fine-tune a small instruction-tuned model using **LoRA** (a PEFT technique). We will be using pure PyTorch without high-level abstractions like `Hugging Face Trainer` to illustrate the core concepts and the iternals of fine-tuning.
 
 We will use **`google/gemma-3-270m-it`** (Gemma 3, 270M parameters, instruction-tuned) and the **Counsel Chat** dataset from Hugging Face (`nbertagnolli/counsel-chat`).
 
-The goal for this demo is intentionally simple: take a user message and have the model generate a short “classification-like” response (the dataset’s `topic`) in natural language.
+The goal for this demo is intentionally simple: take a user message and have the model generate a short "classification-like" response (the dataset’s `topic`) in natural language.
 
-> **Note**: This dataset contains mental-health-related text. Please do not use it for real medical advice or diagnosis or in production systems.
+<Alert title='WARNING' variant='warning'>
+This dataset contains mental-health-related text. Please do not use it for real medical advice or diagnosis or in production systems.
+</Alert>
 
-The code in this section mirrors the notebook `notebooks/Gemma_FineTuning.ipynb`. Some parts are simplified for clarity.
+The code in this section mirrors the notebook [Gemma Fine-Tuning LoRA Google Colab](https://colab.research.google.com/github/gautamnaik1994/LLM_Fine_Tuning_Basic/blob/main/notebooks/Gemma_FineTuning.ipynb). Some parts are simplified for clarity.
 
-## Step 1: Load the Pre-trained Gemma Model
+The QLoRA version of this notebook is available [Gemma Fine-Tuning QLoRA Google Colab](https://colab.research.google.com/github/gautamnaik1994/LLM_Fine_Tuning_Basic/blob/main/notebooks/Gemma_FineTuning_QLoRA.ipynb).
+
+## 1) Load Pre-trained Model
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -111,7 +169,7 @@ tokenizer.padding_side = "right" # Found out that padding was on left by default
 
 Above code downloads the pre-trained Gemma model + tokenizer from Hugging Face.
 
-### Quick sanity-check : Run inference before fine-tuning
+### Sanity Check
 
 Before you train anything, it’s worth seeing what the base model does on your task.
 
@@ -153,7 +211,7 @@ I understand. It's very difficult to say what's happening, but I can offer some 
 
 This baseline output gives you a reference point: after fine-tuning you should see responses that look more like your training targets.
 
-## Step 2: Load the Dataset
+## 2) Load the Dataset
 
 We will use counsel chat dataset from Huggingface which contains mental health related questions and answers. You can load the dataset using the following code. The dataset is available [here](https://huggingface.co/datasets/counselchat/counselchat).
 
@@ -163,7 +221,7 @@ from datasets import load_dataset
 ds = load_dataset("nbertagnolli/counsel-chat")
 ```
 
-## Step 3: Preprocess the Dataset (Chat Formatting)
+## 3) Preprocess Dataset
 
 We need to preprocess the dataset to convert it into a format suitable for training the Gemma model. The Gemma model expects the input in a specific format, so we will create a function to preprocess the data accordingly.
 
@@ -184,11 +242,9 @@ Gemma is instruction-tuned and expects a particular chat syntax (special tokens,
 
 Following s the chat template used in the notebook.
   
-```python
-print(tokenizer.get_chat_template())
-```
-
 ```jinja
+<!-- print(tokenizer.get_chat_template()) -->
+
 {{ bos_token }}
 {%- if messages[0]['role'] == 'system' -%}
     {%- if messages[0]['content'] is string -%}
@@ -267,7 +323,7 @@ I am depressed<end_of_turn>
 
 But we cannot directly pass this text to model. We need to convert this into tokens using the tokenizer. We will do that in the next step.
 
-## Step 4: Tokenize + Create Labels (Mask the Prompt)
+## 4) Tokenize & Create Labels
 
 Now that we have the conversations formatted, we need to tokenize them and create labels for training.
 
@@ -296,7 +352,7 @@ messages = {
 
 After applying the chat template, and tokenizing, we get the following token ids:
 
-```
+```yaml
 Full text:-
 <start_of_turn>user
 You are an assistant.
@@ -324,7 +380,7 @@ Now look at the shifted `input_ids` and `labels`: they are shifted by one positi
 
 Now look closely at the shifted labels: The first `-100` has been removed. This is removed so that the labels align with the shifted `input_ids`. The model predicts the token at position `t` using the input tokens up to position `t-1`.
 
-## Step 5: Build a Dataloader (Padding + Batching)
+## 5) Padding & Batching with Dataloader
 
 While tokenizing, we ignored the length of sequences by setting `padding=False`. This means that each sequence can have a different length. However, for batching, we need to pad the sequences to the same length. The model requires inputs to be of the same length within a batch.
 To handle this, we create a custom collator function that pads the `input_ids` and `labels` to the maximum length in the batch. We use `torch.nn.utils.rnn.pad_sequence` for padding.
@@ -361,9 +417,11 @@ def causal_lm_collator(batch):
   }
 ```
 
-## Step 6: Set up LoRA (PEFT)
+## 6) Set up LoRA
 
-Add target modules for Gemma model. The target modules are the layers of the model that we want to fine-tune using LoRA.
+We will use the `peft` library to set up LoRA for fine-tuning the Gemma model. First, we need to define the LoRA configuration using the `LoraConfig` class.
+Then add target modules for LoRA adaptation. In Gemma, the attention projection layers are named `q_proj`, `k_proj`, `v_proj`, and `o_proj`.
+The target modules are the layers of the model that we want to fine-tune using LoRA.
 
 ```python
 lora_config = LoraConfig(
@@ -376,6 +434,11 @@ lora_config = LoraConfig(
 )
 ```
 
+> **Hyperparameter Intuition**:
+>
+> - **Rank (r)**: Determines the capacity of the adapter. Higher `r` means more parameters and potentially better performance, but higher memory usage. `r=8` is a standard starting point.
+> - **Alpha**: Scales the learned weights. If you increase `r`, you usually increase `alpha` proportionally.
+
 ```python
 from peft import prepare_model_for_kbit_training
 
@@ -385,7 +448,6 @@ peft_model = get_peft_model(train_model, lora_config)
 peft_model.enable_input_require_grads()
 peft_model.gradient_checkpointing_enable()
 peft_model.config.use_cache = False # disable cache for gradient checkpointing
-
 ```
 
 Note the `prepare_model_for_kbit_training` function. As per Hugginface docs:
@@ -396,11 +458,6 @@ This method wraps the entire protocol for preparing a model before running a tra
 - Making output embedding layer require grads
 - Add the upcasting of the lm head to fp32
 - Freezing the base model layers to ensure they are not updated during training
-
-> **Hyperparameter Intuition**:
->
-> - **Rank (r)**: Determines the capacity of the adapter. Higher `r` means more parameters and potentially better performance, but higher memory usage. `r=8` is a standard starting point.
-> - **Alpha**: Scales the learned weights. If you increase `r`, you usually increase `alpha` proportionally.
 
 Above code sets up the LoRA configuration for fine-tuning the Gemma model. You can adjust the parameters based on your requirements. Then we wrap the pre-trained model with PEFT using the `get_peft_model` function.
 
@@ -441,6 +498,8 @@ Gemma3ForCausalLM(
 ```
 
 What the model looks like after applying LoRA is shown below:
+
+<ExpandableSeeMore>
 
 ```python
 PeftModelForCausalLM(
@@ -536,13 +595,15 @@ PeftModelForCausalLM(
 )
 ```
 
+</ExpandableSeeMore>
+
 As you can see, only the layers specified in `target_modules` are modified to include LoRA layers. The rest of the model remains unchanged. This is the key to parameter-efficient fine-tuning.
 
-## Step 7: Training Loop (Manual PyTorch)
+## 7) Training Loop
 
 The notebook uses a manual training loop instead of `Trainer`. This is great for learning because you can see exactly what happens:
 
-- forward pass → logits
+- forward pass -> logits
 - compute loss with `ignore_index=-100`
 - backprop with gradient accumulation
 - optimizer + scheduler step
@@ -657,7 +718,7 @@ for epoch in range(num_epochs):
 
 If your GPU can only fit a small batch (e.g., batch size 2), accumulation lets you simulate a larger effective batch by summing gradients over multiple steps before updating weights.
 
-## Step 8: Save the LoRA Adapter
+## 8) Save the LoRA Adapter
 
 With LoRA, you typically save just the adapter weights (small), not the entire base model (large).
 
@@ -667,7 +728,7 @@ peft_model.save_pretrained(save_dir)
 tokenizer.save_pretrained(save_dir)
 ```
 
-## Step 9: Inference After Fine-Tuning (Load Base + Adapter)
+## 9) Run inference
 
 To run inference, you load the original base model and then attach the adapter.
 
@@ -732,7 +793,7 @@ decoded_response = tokenizer.decode(generated_tokens_tensor, skip_special_tokens
 print(decoded_response) # Based on what you've described, this sounds like 'depression'.
 ```
 
-## Step 10: Merge the Adapter (Optional)
+## 10) Merge the Adapter
 
 Adapters are great for iteration (small artifacts). For deployment, you sometimes want a single merged model directory.
 
@@ -774,19 +835,89 @@ print(decoded_response) # Based on what you've described, this sounds like 'stre
 
 ## Deployment on AWS SageMaker
 
-To deploy the model on AWS SageMaker, you can follow these steps:
+SageMaker is a good option when you want to run training as a managed job (on a GPU instance) and then host the fine-tuned model behind a managed HTTPS endpoint.
 
-- Create a Sagemaker environment. Use a cheap instance to host jupyter notebooks. We need a cheap instance because we will only use it to create a training job.
-- We will need to create a traning job in `train.py` file. This file will contain the code to fine-tune the model using the dataset. We will use the same code as above, but we will need to make some changes to read the dataset.
+### 1) Set up the SageMaker environment
+
+- Create a SageMaker Notebook (or Studio) environment to *orchestrate* training and deployment. A cheap CPU instance is enough here because it mainly submits jobs.
+- Install a compatible SDK version. As of today, pin:
+
+  `pip install sagemaker==2.255.0`
+
+  (SageMaker SDK v3 does not support the Hugging Face integration used below.)
+
+### 2) Create a training job
+
+We create the training job using the SageMaker Hugging Face estimator. The training script lives in [train.py](https://github.com/gautamnaik1994/LLM_Fine_Tuning_Basic/blob/main/aws_sagemaker_deploy/train.py) and the supporting source code is in the `src` directory.
+
+The complete working notebook is here: [Gemma Fine-Tuning LoRA on SageMaker](https://colab.research.google.com/github/gautamnaik1994/LLM_Fine_Tuning_Basic/blob/main/aws_sagemaker_deploy/main.ipynb)
+
+```python
+import sagemaker
+from sagemaker.huggingface import HuggingFace, HuggingFaceModel
+
+role = sagemaker.get_execution_role()
+
+huggingface_estimator = HuggingFace(
+    entry_point='train.py',
+    source_dir='src',
+    instance_type='ml.g5.4xlarge',
+    instance_count=1,
+    role=role,
+    transformers_version='4.56.2',
+    pytorch_version='2.8.0',
+    py_version='py312',
+    base_job_name='finetune-llm',
+    hyperparameters={
+    }
+)
+
+huggingface_estimator.fit()
+```
+
+### 3) Deploy the fine-tuned model
+
+After training finishes, SageMaker writes model artifacts to S3. You can then create a Hugging Face model and deploy it as a real-time endpoint:
+
+```python
+huggingface_model = HuggingFaceModel(
+    model_data=huggingface_estimator.model_data,  # output of huggingface_estimator.model_data
+    role=role,
+     transformers_version='4.51.3',
+    pytorch_version='2.6.0',
+    py_version='py312',
+)
+
+predictor = huggingface_model.deploy(
+    initial_instance_count=1,
+    instance_type='ml.g4dn.2xlarge'
+)
+```
+
+### 4) Run inference
+
+Once the endpoint is up, you can call it with the same chat-formatted prompt you used during fine-tuning:
+
+```python
+prompt = """
+<bos><start_of_turn>user
+You are an assistant responsible for classifying mental health status.
+I feel anxious and stressed all the time.<end_of_turn>
+<start_of_turn>model
+"""
+
+response = predictor.predict({
+    "inputs": prompt,
+    "parameters": {
+        "max_new_tokens": 100,
+        "do_sample": False,
+    }
+})
+
+generated = response[0]['generated_text']
+print("Assistant:", generated)
+```
 
 ## Conclusion
 
-In this blog, we explored fine-tuning LLMs using parameter-efficient techniques like LoRA and walked through a complete Gemma 3 fine-tuning pipeline:
-
-- turn raw data into a chat-format prompt/response
-- tokenize and **mask prompt tokens** so loss trains on the answer
-- add LoRA adapters to attention projections
-- run a simple training loop with gradient accumulation
-- save adapters and optionally merge them into a single deployable model
-
-If you want, I can also update this post with a small “common failure modes + fixes” section (e.g., tokenization mismatches, masking errors, and why outputs look empty) while keeping it concise.
+This blog was intentended to showcase my skills in deep learning, natural language processing, and practical implementation of advanced techniques like LoRA for fine-tuning large language models. By walking through the entire process of fine-tuning a model using LoRA, I have demonstrated my ability to work with state-of-the-art models, preprocess data effectively, and implement custom training loops.
